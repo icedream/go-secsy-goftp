@@ -105,7 +105,7 @@ type Config struct {
 	// concurrent transfers.
 	ConnectionsPerHost int
 
-	// Timeout for opening connections, sending control commands, and each read/write
+	// Timeout for sending control commands, and each read/write
 	// of data transfers. Defaults to 5 seconds.
 	Timeout time.Duration
 
@@ -148,6 +148,10 @@ type Config struct {
 	// neither complete nor downgrade to PASV successfully by themselves, resulting in
 	// hung connections.
 	DisableEPSV bool
+
+	// Sets a function to dial through to connect to the FTP server.
+	// net.Dial will be used if not set.
+	Dial func(network, addr string) (c net.Conn, err error)
 
 	// For testing convenience.
 	stubResponses map[string]stubResponse
@@ -196,6 +200,10 @@ func newClient(config Config, hosts []string) *Client {
 
 	if config.ActiveListenAddr == "" {
 		config.ActiveListenAddr = ":0"
+	}
+
+	if config.Dial == nil {
+		config.Dial = net.Dial
 	}
 
 	return &Client{
@@ -369,15 +377,16 @@ func (c *Client) openConn(idx int, host string) (pconn *persistentConn, err erro
 
 	var conn net.Conn
 
-	if c.config.TLSConfig != nil && c.config.TLSMode == TLSImplicit {
-		pconn.debug("opening TLS control connection to %s", host)
-		dialer := &net.Dialer{
-			Timeout: c.config.Timeout,
+	pconn.debug("opening control connection to %s", host)
+	netConn, err := pconn.config.Dial("tcp", host)
+
+	if err == nil {
+		if c.config.TLSConfig != nil && c.config.TLSMode == TLSImplicit {
+			pconn.debug("enabling TLS on control connection")
+			conn = tls.Client(netConn, pconn.config.TLSConfig)
+		} else {
+			conn = netConn
 		}
-		conn, err = tls.DialWithDialer(dialer, "tcp", host, pconn.config.TLSConfig)
-	} else {
-		pconn.debug("opening control connection to %s", host)
-		conn, err = net.DialTimeout("tcp", host, c.config.Timeout)
 	}
 
 	var (
